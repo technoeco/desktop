@@ -42,8 +42,13 @@ export interface IGenericProgress extends IProgress {
 export interface ICheckoutProgress extends IProgress {
   kind: 'checkout'
 
-  /** The branch that's currently being checked out */
-  readonly targetBranch: string
+  /** The branch or commit that's currently being checked out */
+  readonly target: string
+
+  /**
+   * Infotext for the user.
+   */
+  readonly description: string
 }
 
 /**
@@ -99,18 +104,6 @@ export interface IRevertProgress extends IProgress {
   kind: 'revert'
 }
 
-/** An object describing the progress of a cherry pick operation */
-export interface ICherryPickProgress extends IProgress {
-  readonly kind: 'cherryPick'
-  /** The summary of the commit applied to the base branch */
-  readonly currentCommitSummary: string
-  /** The number to signify which commit in a selection is being cherry-picked
-   **/
-  readonly position: number
-  /** The total number of commits to cherry pick on top of the current branch */
-  readonly totalCommitCount: number
-}
-
 export interface IMultiCommitOperationProgress extends IProgress {
   readonly kind: 'multiCommitOperation'
   /** The summary of the commit applied */
@@ -128,5 +121,20 @@ export type Progress =
   | IPullProgress
   | IPushProgress
   | IRevertProgress
-  | ICherryPickProgress
   | IMultiCommitOperationProgress
+
+/**
+ * Clamps progress values between minimum and maximum.
+ * Useful for reserving portions of progress reporting for different stages.
+ */
+export function clampProgress<T extends Progress>(
+  minimum: number,
+  maximum: number,
+  progressCallback: (progress: T) => void
+): (progress: T) => void {
+  return (progress: T) =>
+    progressCallback({
+      ...progress,
+      value: minimum + progress.value * (maximum - minimum),
+    })
+}

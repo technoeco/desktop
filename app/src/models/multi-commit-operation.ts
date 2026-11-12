@@ -14,6 +14,26 @@ export const enum MultiCommitOperationKind {
   Rebase = 'Rebase',
   CherryPick = 'Cherry-pick',
   Squash = 'Squash',
+  Merge = 'Merge',
+  Reorder = 'Reorder',
+}
+
+/** Type guard which narrows a string to a MultiCommitOperationKind */
+export function isIdMultiCommitOperation(
+  id: string
+): id is
+  | MultiCommitOperationKind.Rebase
+  | MultiCommitOperationKind.CherryPick
+  | MultiCommitOperationKind.Squash
+  | MultiCommitOperationKind.Merge
+  | MultiCommitOperationKind.Reorder {
+  return (
+    id === MultiCommitOperationKind.Rebase ||
+    id === MultiCommitOperationKind.CherryPick ||
+    id === MultiCommitOperationKind.Squash ||
+    id === MultiCommitOperationKind.Merge ||
+    id === MultiCommitOperationKind.Reorder
+  )
 }
 
 /**
@@ -28,6 +48,8 @@ export type MultiCommitOperationStep =
   | HideConflictsStep
   | ConfirmAbortStep
   | CreateBranchStep
+  | ShowCopilotConflictsLoadingStep
+  | ShowCopilotConflictsStep
 
 /**
  * Possible kinds of steps that may happen during a multi commit operation such
@@ -85,6 +107,18 @@ export const enum MultiCommitOperationStepKind {
    * Example: Cherry-picking to a new branch.
    */
   CreateBranch = 'CreateBranch',
+
+  /**
+   * Copilot is resolving conflicts. A loading interstitial is shown while
+   * the LLM generates resolutions.
+   */
+  ShowCopilotConflictsLoading = 'ShowCopilotConflictsLoading',
+
+  /**
+   * Copilot has generated resolutions. The user can review applied resolutions,
+   * open files in their editor, and continue the operation.
+   */
+  ShowCopilotConflicts = 'ShowCopilotConflicts',
 }
 
 export type ChooseBranchStep = {
@@ -120,6 +154,16 @@ export type HideConflictsStep = {
 export type ConfirmAbortStep = {
   readonly kind: MultiCommitOperationStepKind.ConfirmAbort
   readonly conflictState: MultiCommitOperationConflictState
+  /**
+   * The step the user was on when they invoked the abort confirmation.
+   * Used to route them back to the right place if they choose to
+   * return rather than abort. Defaults to ShowConflicts if omitted
+   * (the historical behavior).
+   */
+  readonly returnToStepKind?:
+    | MultiCommitOperationStepKind.ShowConflicts
+    | MultiCommitOperationStepKind.ShowCopilotConflicts
+    | MultiCommitOperationStepKind.ShowCopilotConflictsLoading
 }
 
 export type CreateBranchStep = {
@@ -132,7 +176,50 @@ export type CreateBranchStep = {
   targetBranchName: string
 }
 
-interface IInteractiveRebaseDetails {
+export type ShowCopilotConflictsLoadingStep = {
+  readonly kind: MultiCommitOperationStepKind.ShowCopilotConflictsLoading
+  readonly conflictState: MultiCommitOperationConflictState
+}
+
+export type ShowCopilotConflictsStep = {
+  readonly kind: MultiCommitOperationStepKind.ShowCopilotConflicts
+  readonly conflictState: MultiCommitOperationConflictState
+}
+
+interface IBaseInteractiveRebaseDetails {
+  /**
+   * Array of commits used during the operation.
+   */
+  readonly commits: ReadonlyArray<Commit>
+
+  /**
+   * This is the commit sha of the HEAD of the in-flight operation used to compare
+   * the state of the after an operation to a previous state.
+   */
+  readonly currentTip: string
+}
+
+interface IInteractiveRebaseDetails extends IBaseInteractiveRebaseDetails {
+  /**
+   * The reference to the last retained commit on the branch during an
+   * interactive rebase or null if rebasing to the root.
+   */
+  readonly lastRetainedCommitRef: string | null
+}
+
+interface ISourceBranchDetails {
+  /**
+   * The branch that are the source of the commits for the operation.
+   *
+   * Cherry-pick = the branch the user started on.
+   * Rebase, Merge = the branch the user picks in the choose branch dialog (thus will be null to start)
+   */
+  readonly sourceBranch: Branch | null
+}
+
+interface ISquashDetails extends IInteractiveRebaseDetails {
+  readonly kind: MultiCommitOperationKind.Squash
+
   /**
    * A commit that the interactive rebase takes place around.
    *
@@ -141,26 +228,16 @@ interface IInteractiveRebaseDetails {
   readonly targetCommit: Commit
 
   /**
-   * The reference to the last retained commit on the branch during an
-   * interactive rebase or null if rebasing to the root.
-   */
-  readonly lastRetainedCommitRef: string | null
-}
-interface ISourceBranchDetails {
-  /**
-   * The branch that are the source of the commits for the operation.
-   *
-   * Cherry-pick = the branch the user started on.
-   * Rebase = the branch the user picks in the choose branch dialog
-   */
-  readonly sourceBranch: ICommitContext
-}
-interface ISquashDetails extends IInteractiveRebaseDetails {
-  readonly kind: MultiCommitOperationKind.Squash
-  /**
    * The commit context of the commit squashed.
    */
   readonly commitContext: ICommitContext
+}
+
+interface IReorderDetails extends IInteractiveRebaseDetails {
+  readonly kind: MultiCommitOperationKind.Reorder
+
+  /** The commit before which the commits to reorder will be placed. */
+  readonly beforeCommit: Commit | null
 }
 
 interface ICherryPickDetails extends ISourceBranchDetails {
@@ -171,13 +248,49 @@ interface ICherryPickDetails extends ISourceBranchDetails {
    * Example: can create a new branch to copy commits to during cherry-pick
    */
   readonly branchCreated: boolean
+
+  /**
+   * Array of commits used during the operation.
+   */
+  readonly commits: ReadonlyArray<CommitOneLine>
 }
 
 interface IRebaseDetails extends ISourceBranchDetails {
   readonly kind: MultiCommitOperationKind.Rebase
+  readonly commits: ReadonlyArray<CommitOneLine>
+  /**
+   * This is the commit sha of the HEAD of the in-flight operation used to compare
+   * the state of the after an operation to a previous state.
+   */
+  readonly currentTip: string
+}
+
+interface IMergeDetails extends ISourceBranchDetails {
+  readonly kind: MultiCommitOperationKind.Merge
+  readonly isSquash: boolean
 }
 
 export type MultiCommitOperationDetail =
   | ISquashDetails
+  | IReorderDetails
   | ICherryPickDetails
   | IRebaseDetails
+  | IMergeDetails
+
+export function instanceOfIBaseRebaseDetails(
+  object: any
+): object is IBaseInteractiveRebaseDetails {
+  const objectWithRequiredFields: IBaseInteractiveRebaseDetails = {
+    commits: [],
+    currentTip: '',
+  }
+
+  return Object.keys(objectWithRequiredFields).every(key => key in object)
+}
+
+export const conflictSteps = [
+  MultiCommitOperationStepKind.ShowConflicts,
+  MultiCommitOperationStepKind.ConfirmAbort,
+  MultiCommitOperationStepKind.ShowCopilotConflictsLoading,
+  MultiCommitOperationStepKind.ShowCopilotConflicts,
+]

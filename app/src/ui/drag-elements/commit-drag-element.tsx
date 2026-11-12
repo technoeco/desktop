@@ -4,16 +4,25 @@ import * as React from 'react'
 import { dragAndDropManager } from '../../lib/drag-and-drop-manager'
 import { assertNever } from '../../lib/fatal-error'
 import { Commit } from '../../models/commit'
-import { DropTarget, DropTargetType } from '../../models/drag-drop'
+import { DragType, DropTarget, DropTargetType } from '../../models/drag-drop'
 import { GitHubRepository } from '../../models/github-repository'
 import { CommitListItem } from '../history/commit-list-item'
-import { Octicon, OcticonSymbol } from '../octicons'
+import { Octicon } from '../octicons'
+import * as octicons from '../octicons/octicons.generated'
+import { Account } from '../../models/account'
+import { Emoji } from '../../lib/emoji'
 
 interface ICommitDragElementProps {
   readonly commit: Commit
   readonly selectedCommits: ReadonlyArray<Commit>
   readonly gitHubRepository: GitHubRepository | null
-  readonly emoji: Map<string, string>
+  /**
+   * Whether or not this is shown for a keyboard-based insertion (like reordering
+   * commits). Optional. Default: false
+   */
+  readonly isKeyboardInsertion?: boolean
+  readonly emoji: Map<string, Emoji>
+  readonly accounts: ReadonlyArray<Account>
 }
 
 interface ICommitDragElementState {
@@ -71,7 +80,7 @@ export class CommitDragElement extends React.Component<
     switch (currentDropTarget.type) {
       case DropTargetType.Branch:
         const copyToPlus = __DARWIN__ ? null : (
-          <Octicon className="copy-to-icon" symbol={OcticonSymbol.plus} />
+          <Octicon className="copy-to-icon" symbol={octicons.plus} />
         )
         toolTipContents = (
           <>
@@ -91,6 +100,24 @@ export class CommitDragElement extends React.Component<
         toolTipContents = (
           <>
             <span>Squash {commitsBeingSquashedCount} commits</span>
+          </>
+        )
+        break
+      case DropTargetType.ListInsertionPoint:
+        if (currentDropTarget.data.type !== DragType.Commit) {
+          toolTipContents = (
+            <>
+              <span>'Insert here'</span>
+            </>
+          )
+          break
+        }
+
+        const pluralized =
+          currentDropTarget.data.commits.length === 1 ? 'commit' : 'commits'
+        toolTipContents = (
+          <>
+            <span>{`Move ${pluralized} here`}</span>
           </>
         )
         break
@@ -115,6 +142,7 @@ export class CommitDragElement extends React.Component<
         switch (dropTarget.type) {
           case DropTargetType.Branch:
           case DropTargetType.Commit:
+          case DropTargetType.ListInsertionPoint:
             this.setToolTipTimer(1500)
             break
           default:
@@ -148,7 +176,10 @@ export class CommitDragElement extends React.Component<
     const { commit, gitHubRepository, selectedCommits, emoji } = this.props
     const count = selectedCommits.length
 
-    const className = classNames({ 'multiple-selected': count > 1 })
+    const className = classNames({
+      'multiple-selected': count > 1,
+      'in-keyboard-insertion-mode': this.props.isKeyboardInsertion ?? false,
+    })
     return (
       <div id="commit-drag-element" className={className}>
         <div className="commit-box">
@@ -158,8 +189,9 @@ export class CommitDragElement extends React.Component<
             commit={commit}
             selectedCommits={selectedCommits}
             emoji={emoji}
-            isLocal={false}
             showUnpushedIndicator={false}
+            accounts={this.props.accounts}
+            preferAbsoluteDates={false}
           />
         </div>
         {this.renderDragToolTip()}
